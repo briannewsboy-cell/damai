@@ -175,6 +175,8 @@ def test_run_once_does_not_notify_when_already_notified(config):
         mock_wechat.send.assert_not_called()
         # State is still persisted on the no-notify path.
         mock_save.assert_called_once()
+        saved_state = mock_save.call_args[0][1]
+        assert saved_state.notified is True
 
 
 def test_is_within_run_window_inside_window():

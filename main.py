@@ -50,6 +50,8 @@ def run_once(config: Config, state_path: str = "state.json") -> None:
         EmailNotifier(config).send(result.title, result.url, result.status)
         WeChatNotifier(config).send(result.title, result.url, result.status)
         new_state.notified = True
+    elif new_state.last_status == "on_sale" and old_state.notified:
+        new_state.notified = True
     else:
         logger.info("No notification needed (status=%s)", result.status)
 
