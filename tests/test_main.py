@@ -141,6 +141,42 @@ def test_run_once_uses_state_path_argument(config, tmp_path):
         mock_save.assert_called_once_with(state_path, mock_save.call_args[0][1])
 
 
+def test_run_once_does_not_notify_when_already_notified(config):
+    """Integration check: a repeated on_sale result must not re-notify.
+
+    Verifies the end-to-end flow with mocked checker and notifiers: when the
+    previous state already records on_sale + notified, run_once must skip both
+    notifiers. See task-8 report for a related state-persistence concern.
+    """
+    old_state = State(last_status="on_sale", notified=True)
+    result = ConcertResult(
+        title="刘宪华演唱会-苏州站",
+        url="https://detail.damai.cn/item.htm?id=123",
+        status="on_sale",
+        on_sale=True,
+        checked_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+    with patch("main.load_state", return_value=old_state), \
+         patch("main.save_state") as mock_save, \
+         patch("main.HttpDamaiChecker") as mock_checker_cls, \
+         patch("main.EmailNotifier") as mock_email_cls, \
+         patch("main.WeChatNotifier") as mock_wechat_cls:
+
+        mock_checker_cls.return_value.check.return_value = result
+        mock_email = Mock()
+        mock_wechat = Mock()
+        mock_email_cls.return_value = mock_email
+        mock_wechat_cls.return_value = mock_wechat
+
+        run_once(config)
+
+        mock_email.send.assert_not_called()
+        mock_wechat.send.assert_not_called()
+        # State is still persisted on the no-notify path.
+        mock_save.assert_called_once()
+
+
 def test_is_within_run_window_inside_window():
     tz = pytz.timezone("Asia/Shanghai")
     # 12:00 CST is inside the 9:00-20:00 window
