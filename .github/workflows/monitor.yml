@@ -2,7 +2,12 @@ name: Damai Ticket Monitor
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    # Triggers every 5 minutes during Shanghai 09:00–20:00 (UTC 01:00–12:00).
+    # Before July 20: one check per trigger (every 5 minutes).
+    # July 20–31: each trigger runs 5-minute internal polling with 1-minute
+    # checks, giving effective 1-minute granularity. This transition is handled
+    # inside main.py (should_use_polling_mode / run_polling).
+    - cron: "*/5 1-12 * * *"
   workflow_dispatch:
 
 permissions:
@@ -42,6 +47,6 @@ jobs:
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add state.json
+          git add state.json 2>/dev/null || true
           git diff --staged --quiet || git commit -m "chore: update state.json [skip ci]"
           git push
