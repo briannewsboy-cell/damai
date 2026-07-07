@@ -1,10 +1,28 @@
-from datetime import datetime, timezone
+import logging
+from datetime import datetime
 from urllib.parse import urljoin
 
+import pytz
 import requests
 
-from config import Config
 from checkers.base import ConcertResult
+from config import Config
+from retry import with_retry
+
+logger = logging.getLogger(__name__)
+
+TZ = pytz.timezone("Asia/Shanghai")
+
+# Retry config for Damai search/detail requests (spec: 3 retries, exp backoff).
+RETRIES = 3
+BACKOFF_BASE = 1.0
+# Retry on network errors and HTTP errors (4xx/5xx). Timeouts are a subclass
+# of RequestException so they're covered.
+RETRY_EXCEPTIONS = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.HTTPError,
+)
 
 
 class HttpDamaiChecker:
@@ -28,20 +46,31 @@ class HttpDamaiChecker:
             "keyword": self.config.concert_keyword,
             "cty": "苏州",
         }
-        response = self.session.get(search_url, params=params, timeout=10)
-        response.raise_for_status()
+        response = self._get_with_retry(search_url, params=params)
         data = response.json()
 
         items = data.get("data", {}).get("list", [])
         if not items:
-            raise RuntimeError("No search results found")
+            # Empty results are a valid "not on sale" signal, not an error.
+            # Returning here keeps the GitHub Actions job green and lets the
+            # normal state-persistence path run.
+            logger.warning(
+                "No search results found for keyword=%r; reporting not_on_sale",
+                self.config.concert_keyword,
+            )
+            return ConcertResult(
+                title="",
+                url="",
+                status="not_on_sale",
+                on_sale=False,
+                checked_at=datetime.now(TZ).isoformat(),
+            )
 
         item = self._pick_best_item(items)
         detail_url = urljoin("https://detail.damai.cn/", item.get("url", ""))
         title = item.get("name", "")
 
-        detail_response = self.session.get(detail_url, timeout=10)
-        detail_response.raise_for_status()
+        detail_response = self._get_with_retry(detail_url)
         on_sale = self._parse_sale_status(detail_response.text)
 
         return ConcertResult(
@@ -49,7 +78,27 @@ class HttpDamaiChecker:
             url=detail_url,
             status="on_sale" if on_sale else "not_on_sale",
             on_sale=on_sale,
-            checked_at=datetime.now(timezone.utc).isoformat(),
+            checked_at=datetime.now(TZ).isoformat(),
+        )
+
+    def _get_with_retry(self, url: str, **kwargs) -> requests.Response:
+        """GET ``url`` with 3 retries and exponential backoff.
+
+        ``raise_for_status`` runs inside the retry so transient 5xx responses
+        are retried rather than failing the check immediately.
+        """
+
+        def do() -> requests.Response:
+            resp = self.session.get(url, timeout=10, **kwargs)
+            resp.raise_for_status()
+            return resp
+
+        return with_retry(
+            do,
+            retries=RETRIES,
+            backoff_base=BACKOFF_BASE,
+            exceptions=RETRY_EXCEPTIONS,
+            label=f"GET {url}",
         )
 
     def _pick_best_item(self, items: list[dict]) -> dict:

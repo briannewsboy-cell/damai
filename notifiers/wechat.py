@@ -1,5 +1,16 @@
 import requests
+
 from config import Config
+from retry import with_retry
+
+# Retry config for the WeChat API call (spec: 3 retries, exp backoff).
+RETRIES = 3
+BACKOFF_BASE = 1.0
+RETRY_EXCEPTIONS = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.HTTPError,
+)
 
 
 class WeChatNotifier:
@@ -23,5 +34,15 @@ class WeChatNotifier:
         else:
             raise ValueError(f"Unsupported wechat_provider: {self.config.wechat_provider}")
 
-        response = requests.post(endpoint, data=payload, timeout=10)
-        response.raise_for_status()
+        def do() -> requests.Response:
+            resp = requests.post(endpoint, data=payload, timeout=10)
+            resp.raise_for_status()
+            return resp
+
+        with_retry(
+            do,
+            retries=RETRIES,
+            backoff_base=BACKOFF_BASE,
+            exceptions=RETRY_EXCEPTIONS,
+            label=f"WeChat {self.config.wechat_provider} notify",
+        )
