@@ -124,3 +124,101 @@ def test_http_checker_uses_best_match(config):
 
     assert result.title == "刘宪华演唱会-苏州站"
     assert "222" in result.url
+
+
+@responses.activate
+def test_http_checker_empty_results_returns_not_on_sale(config):
+    """Empty search results must not raise; return a not_on_sale result instead.
+
+    Previously this raised RuntimeError, failing the GitHub Actions job.
+    """
+    responses.add(
+        responses.GET,
+        "https://search.damai.cn/searchajax.html",
+        json={"data": {"list": []}},
+        status=200,
+    )
+
+    checker = HttpDamaiChecker(config)
+    result = checker.check()
+
+    assert result.on_sale is False
+    assert result.status == "not_on_sale"
+    assert result.title == ""
+    assert result.url == ""
+    assert result.checked_at is not None
+    # No detail request should have been made.
+    assert all("detail.damai.cn" not in call.request.url for call in responses.calls)
+
+
+@responses.activate
+def test_http_checker_retries_search_on_5xx(config, monkeypatch):
+    """A transient 5xx on the search endpoint is retried up to 3 times."""
+    import retry as retry_mod
+
+    monkeypatch.setattr(retry_mod.time, "sleep", lambda _: None)
+
+    with open("tests/fixtures/detail_on_sale.html", "r", encoding="utf-8") as f:
+        detail_html = f.read()
+
+    # First two search calls fail, third succeeds.
+    responses.add(
+        responses.GET, "https://search.damai.cn/searchajax.html", status=500
+    )
+    responses.add(
+        responses.GET, "https://search.damai.cn/searchajax.html", status=503
+    )
+    responses.add(
+        responses.GET,
+        "https://search.damai.cn/searchajax.html",
+        json={
+            "data": {
+                "list": [
+                    {
+                        "url": "/item.htm?id=123",
+                        "name": "刘宪华演唱会-苏州站",
+                        "cityname": "苏州",
+                    }
+                ]
+            }
+        },
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        "https://detail.damai.cn/item.htm?id=123",
+        body=detail_html,
+        status=200,
+    )
+
+    checker = HttpDamaiChecker(config)
+    result = checker.check()
+
+    assert result.on_sale is True
+    # Exactly 3 search calls + 1 detail call.
+    search_calls = [
+        c for c in responses.calls if "search.damai.cn" in c.request.url
+    ]
+    assert len(search_calls) == 3
+
+
+@responses.activate
+def test_http_checker_raises_after_retries_exhausted(config, monkeypatch):
+    """If all 3 search attempts fail, the last error propagates so run_once can alert."""
+    import retry as retry_mod
+
+    monkeypatch.setattr(retry_mod.time, "sleep", lambda _: None)
+
+    for _ in range(3):
+        responses.add(
+            responses.GET, "https://search.damai.cn/searchajax.html", status=500
+        )
+
+    checker = HttpDamaiChecker(config)
+    with pytest.raises(Exception):
+        checker.check()
+
+    search_calls = [
+        c for c in responses.calls if "search.damai.cn" in c.request.url
+    ]
+    assert len(search_calls) == 3

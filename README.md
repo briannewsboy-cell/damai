@@ -6,12 +6,14 @@
 
 ## 运行 schedule
 
-Workflow 每天 **北京时间 09:00–20:00**（UTC 01:00–12:00）每 5 分钟触发一次。
+Workflow 每天 **北京时间 09:00–20:00** 每 5 分钟触发一次。最后一个触发是
+19:55 CST（11:55 UTC）；20:00 之后的运行会被 `main.py` 的运行窗口跳过，因此
+提前一小时停止以避免浪费 Action 分钟（cron 范围 `1-11` UTC）。
 
 - **7 月 20 日前**：每次触发执行一次检查（实际频率：每 5 分钟一次）
 - **7 月 20–31 日**：每次触发进入轮询模式，持续 5 分钟每分钟检查一次（实际频率：每分钟一次）
 
-时间窗口控制和轮询模式切换由 `main.py` 内部实现（`RUN_WINDOW_START`/`RUN_WINDOW_END` 和 `should_use_polling_mode`）。
+时间窗口控制和轮询模式切换由 `main.py` 内部实现（`RUN_WINDOW_START`/`RUN_WINDOW_END`、`POLL_SWITCH_DATE`/`POLL_END_DATE` 和 `should_use_polling_mode`）。
 
 ## 项目结构
 

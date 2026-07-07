@@ -7,6 +7,7 @@ import pytz
 from checkers.base import ConcertResult
 from config import Config
 from main import (
+    POLL_END_DATE,
     POLL_SWITCH_DATE,
     RUN_WINDOW_END,
     RUN_WINDOW_START,
@@ -224,16 +225,25 @@ def test_should_use_polling_mode_on_switch_date():
     assert should_use_polling_mode(now) is True
 
 
-def test_should_use_polling_mode_after_switch_date():
+def test_should_use_polling_mode_on_end_date():
+    """July 31 is the last polling day (inclusive)."""
     tz = pytz.timezone("Asia/Shanghai")
     now = tz.localize(datetime(2026, 7, 31, 19, 59))
     assert should_use_polling_mode(now) is True
+
+
+def test_should_use_polling_mode_after_end_date():
+    """Polling must stop after July 31 (Critical fix: previously unbounded)."""
+    tz = pytz.timezone("Asia/Shanghai")
+    now = tz.localize(datetime(2026, 8, 1, 9, 0))
+    assert should_use_polling_mode(now) is False
 
 
 def test_run_window_constants_match_plan():
     assert RUN_WINDOW_START == 9
     assert RUN_WINDOW_END == 20
     assert POLL_SWITCH_DATE == "2026-07-20"
+    assert POLL_END_DATE == "2026-07-31"
 
 
 def test_run_polling_runs_until_deadline(config):
@@ -264,10 +274,14 @@ def test_run_polling_runs_until_deadline(config):
 
 
 def test_run_polling_continues_after_exception(config):
-    """A failing run_once iteration must not terminate the polling loop."""
+    """A failing checker must not terminate the polling loop.
+
+    run_once catches checker exceptions internally (and sends a one-time
+    fallback alert), so run_polling's own try/except is a backstop.
+    """
     # time.time() sequence:
     #   0.0   -> deadline = 0 + 10 = 10
-    #   1.0   -> while-check: 1 < 10, enter iter 1 (run_once raises, caught)
+    #   1.0   -> while-check: 1 < 10, enter iter 1 (checker raises, run_once handles)
     #   2.0   -> remaining = 10 - 2 = 8 > 0, sleep 5
     #   100.0 -> while-check: 100 < 10 False, exit
     time_values = [0.0, 1.0, 2.0, 100.0]
@@ -305,3 +319,168 @@ def test_run_polling_forwards_state_path(config, tmp_path):
         run_polling(config, duration_seconds=10, interval_seconds=5, state_path=state_path)
 
         mock_load.assert_called_once_with(state_path)
+
+
+def test_run_once_email_failure_does_not_block_wechat_or_save(config):
+    """An SMTP failure must not prevent WeChat or skip state persistence.
+
+    Critical fix: previously a single notifier raising aborted save_state,
+    causing duplicate alerts on the next run.
+    """
+    old_state = State(last_status="not_on_sale", notified=False)
+    result = _make_result("on_sale")
+
+    with patch("main.load_state", return_value=old_state), \
+         patch("main.save_state") as mock_save, \
+         patch("main.HttpDamaiChecker") as mock_checker_cls, \
+         patch("main.EmailNotifier") as mock_email_cls, \
+         patch("main.WeChatNotifier") as mock_wechat_cls:
+
+        mock_checker_cls.return_value.check.return_value = result
+        mock_email = Mock()
+        mock_wechat = Mock()
+        mock_email.send.side_effect = RuntimeError("smtp down")
+        mock_email_cls.return_value = mock_email
+        mock_wechat_cls.return_value = mock_wechat
+
+        run_once(config)
+
+        # Both notifiers attempted independently.
+        mock_email.send.assert_called_once()
+        mock_wechat.send.assert_called_once()
+        # State is still persisted.
+        mock_save.assert_called_once()
+        saved_state = mock_save.call_args[0][1]
+        # WeChat succeeded, so notified is True (no duplicate next run).
+        assert saved_state.notified is True
+        assert saved_state.last_status == "on_sale"
+
+
+def test_run_once_wechat_failure_does_not_block_email(config):
+    """Symmetric to the email case: a WeChat failure must not block email."""
+    old_state = State(last_status="not_on_sale", notified=False)
+    result = _make_result("on_sale")
+
+    with patch("main.load_state", return_value=old_state), \
+         patch("main.save_state") as mock_save, \
+         patch("main.HttpDamaiChecker") as mock_checker_cls, \
+         patch("main.EmailNotifier") as mock_email_cls, \
+         patch("main.WeChatNotifier") as mock_wechat_cls:
+
+        mock_checker_cls.return_value.check.return_value = result
+        mock_email = Mock()
+        mock_wechat = Mock()
+        mock_wechat.send.side_effect = RuntimeError("wechat down")
+        mock_email_cls.return_value = mock_email
+        mock_wechat_cls.return_value = mock_wechat
+
+        run_once(config)
+
+        mock_email.send.assert_called_once()
+        mock_wechat.send.assert_called_once()
+        mock_save.assert_called_once()
+        saved_state = mock_save.call_args[0][1]
+        # Email succeeded, so notified is True.
+        assert saved_state.notified is True
+
+
+def test_run_once_both_notifiers_fail_leaves_notified_false(config):
+    """When both notifiers fail, notified stays False so both retry next run."""
+    old_state = State(last_status="not_on_sale", notified=False)
+    result = _make_result("on_sale")
+
+    with patch("main.load_state", return_value=old_state), \
+         patch("main.save_state") as mock_save, \
+         patch("main.HttpDamaiChecker") as mock_checker_cls, \
+         patch("main.EmailNotifier") as mock_email_cls, \
+         patch("main.WeChatNotifier") as mock_wechat_cls:
+
+        mock_checker_cls.return_value.check.return_value = result
+        mock_email = Mock()
+        mock_wechat = Mock()
+        mock_email.send.side_effect = RuntimeError("smtp down")
+        mock_wechat.send.side_effect = RuntimeError("wechat down")
+        mock_email_cls.return_value = mock_email
+        mock_wechat_cls.return_value = mock_wechat
+
+        run_once(config)
+
+        mock_email.send.assert_called_once()
+        mock_wechat.send.assert_called_once()
+        mock_save.assert_called_once()
+        saved_state = mock_save.call_args[0][1]
+        assert saved_state.notified is False
+
+
+def test_run_once_checker_failure_sends_one_time_alert(config):
+    """A persistent checker failure sends a one-time fallback alert."""
+    old_state = State(last_status="not_on_sale", notified=False)
+
+    with patch("main.load_state", return_value=old_state), \
+         patch("main.save_state") as mock_save, \
+         patch("main.HttpDamaiChecker") as mock_checker_cls, \
+         patch("main.EmailNotifier") as mock_email_cls, \
+         patch("main.WeChatNotifier") as mock_wechat_cls:
+
+        mock_checker_cls.return_value.check.side_effect = RuntimeError("damai 500")
+        mock_email = Mock()
+        mock_wechat = Mock()
+        mock_email_cls.return_value = mock_email
+        mock_wechat_cls.return_value = mock_wechat
+
+        run_once(config)
+
+        # One-time fallback alert fires on both channels.
+        mock_email.send.assert_called_once()
+        mock_wechat.send.assert_called_once()
+        # The alert message is the checker-failure text.
+        email_args = mock_email.send.call_args[0]
+        assert email_args[0] == "检查器失效，请人工查看"
+        mock_save.assert_called_once()
+        saved_state = mock_save.call_args[0][1]
+        assert saved_state.checker_failed_notified is True
+
+
+def test_run_once_checker_failure_does_not_renotify(config):
+    """Once checker_failed_notified is set, subsequent failures don't re-alert."""
+    old_state = State(
+        last_status="not_on_sale", notified=False, checker_failed_notified=True
+    )
+
+    with patch("main.load_state", return_value=old_state), \
+         patch("main.save_state") as mock_save, \
+         patch("main.HttpDamaiChecker") as mock_checker_cls, \
+         patch("main.EmailNotifier") as mock_email_cls, \
+         patch("main.WeChatNotifier") as mock_wechat_cls:
+
+        mock_checker_cls.return_value.check.side_effect = RuntimeError("damai 500")
+
+        run_once(config)
+
+        # No re-notification.
+        mock_email_cls.return_value.send.assert_not_called()
+        mock_wechat_cls.return_value.send.assert_not_called()
+        mock_save.assert_called_once()
+        saved_state = mock_save.call_args[0][1]
+        assert saved_state.checker_failed_notified is True
+
+
+def test_run_once_resets_checker_failed_flag_on_success(config):
+    """A successful check clears the checker_failed_notified flag."""
+    old_state = State(
+        last_status="not_on_sale", notified=False, checker_failed_notified=True
+    )
+    result = _make_result("not_on_sale")
+
+    with patch("main.load_state", return_value=old_state), \
+         patch("main.save_state") as mock_save, \
+         patch("main.HttpDamaiChecker") as mock_checker_cls, \
+         patch("main.EmailNotifier"), \
+         patch("main.WeChatNotifier"):
+
+        mock_checker_cls.return_value.check.return_value = result
+        run_once(config)
+
+        mock_save.assert_called_once()
+        saved_state = mock_save.call_args[0][1]
+        assert saved_state.checker_failed_notified is False

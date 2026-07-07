@@ -2,12 +2,15 @@ name: Damai Ticket Monitor
 
 on:
   schedule:
-    # Triggers every 5 minutes during Shanghai 09:00–20:00 (UTC 01:00–12:00).
+    # Triggers every 5 minutes within Shanghai 09:00–20:00. Shanghai is UTC+8,
+    # so 09:00 CST = 01:00 UTC and 19:55 CST = 11:55 UTC. The last trigger is
+    # 11:55 UTC (19:55 CST); the 20:00 CST run would be skipped by main.py's
+    # run window anyway, so we stop one hour earlier to avoid wasted minutes.
     # Before July 20: one check per trigger (every 5 minutes).
     # July 20–31: each trigger runs 5-minute internal polling with 1-minute
     # checks, giving effective 1-minute granularity. This transition is handled
     # inside main.py (should_use_polling_mode / run_polling).
-    - cron: "*/5 1-12 * * *"
+    - cron: "*/5 1-11 * * *"
   workflow_dispatch:
 
 permissions:
