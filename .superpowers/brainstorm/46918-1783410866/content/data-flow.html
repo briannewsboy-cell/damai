@@ -1,0 +1,85 @@
+<h2>数据流与运行时流程</h2>
+<p class="subtitle">一次 GitHub Actions 运行内部的完整流程</p>
+
+<div class="section">
+  <div class="mockup">
+    <div class="mockup-header">单次运行流程</div>
+    <div class="mockup-body">
+      <div style="display:flex;flex-direction:column;gap:12px;">
+
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div style="background:#e2e8f0;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-weight:bold;color:#475569;">1</div>
+          <div style="flex:1;background:#f1f5f9;border-radius:6px;padding:10px;">
+            <strong>GitHub Actions 触发</strong> — cron 每 5 分钟拉起 workflow
+          </div>
+        </div>
+
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div style="background:#e2e8f0;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-weight:bold;color:#475569;">2</div>
+          <div style="flex:1;background:#f1f5f9;border-radius:6px;padding:10px;">
+            <strong>读取 state.json</strong> — 获取上一次检测状态
+          </div>
+        </div>
+
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div style="background:#e2e8f0;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-weight:bold;color:#475569;">3</div>
+          <div style="flex:1;background:#f1f5f9;border-radius:6px;padding:10px;">
+            <strong>时间窗口判断</strong> — 不在 9:00–20:00 直接结束
+          </div>
+        </div>
+
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div style="background:#e2e8f0;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-weight:bold;color:#475569;">4</div>
+          <div style="flex:1;background:#f1f5f9;border-radius:6px;padding:10px;">
+            <strong>日期决定模式</strong> — 7/20 前单次检查；7/20 起进入 5 分钟轮询
+          </div>
+        </div>
+
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div style="background:#e2e8f0;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-weight:bold;color:#475569;">5</div>
+          <div style="flex:1;background:#f1f5f9;border-radius:6px;padding:10px;">
+            <strong>调用 Damai 检查器</strong> — 搜索关键词 → 匹配演出 → 读取状态
+          </div>
+        </div>
+
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div style="background:#e2e8f0;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-weight:bold;color:#475569;">6</div>
+          <div style="flex:1;background:#f1f5f9;border-radius:6px;padding:10px;">
+            <strong>状态对比</strong> — 与 state.json 比较，判断是否变化
+          </div>
+        </div>
+
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div style="background:#e2e8f0;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-weight:bold;color:#475569;">7</div>
+          <div style="flex:1;background:#f1f5f9;border-radius:6px;padding:10px;">
+            <strong>发送通知</strong> — 仅在变为「立即购买」时推送邮件 + 微信
+          </div>
+        </div>
+
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div style="background:#e2e8f0;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-weight:bold;color:#475569;">8</div>
+          <div style="flex:1;background:#f1f5f9;border-radius:6px;padding:10px;">
+            <strong>写入并提交 state.json</strong> — 更新状态，结束运行
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>状态转换规则</h3>
+  <div class="mockup">
+    <div class="mockup-body">
+      <div style="display:flex;align-items:center;justify-content:center;gap:20px;flex-wrap:wrap;">
+        <div style="padding:12px 20px;background:#fef2f2;border:2px solid #ef4444;border-radius:8px;">未开售</div>
+        <div style="font-size:24px;color:#64748b;">→ 状态变化 →</div>
+        <div style="padding:12px 20px;background:#dcfce7;border:2px solid #22c55e;border-radius:8px;">立即购买</div>
+        <div style="font-size:24px;color:#64748b;">→ 发通知 →</div>
+        <div style="padding:12px 20px;background:#dbeafe;border:2px solid #3b82f6;border-radius:8px;">已通知</div>
+      </div>
+      <p style="margin-top:16px;color:#64748b;font-size:0.9em;">如果连续检查都保持「立即购买」，不再重复通知，避免信息轰炸。</p>
+    </div>
+  </div>
+</div>
