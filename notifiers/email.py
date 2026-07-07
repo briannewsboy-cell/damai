@@ -3,16 +3,31 @@ from email.mime.text import MIMEText
 import smtplib
 from config import Config
 
+# Human-readable Chinese labels for the status values that flow through
+# EmailNotifier. The subject previously hardcoded "已开售", which was
+# misleading for checker-failure alerts. Unknown statuses fall back to a
+# generic label rather than echoing the raw status string into the subject.
+_STATUS_LABELS = {
+    "on_sale": "已开售",
+    "not_on_sale": "未开售",
+    "checker_failed": "检查器异常",
+}
+
+
+def _status_label(status: str) -> str:
+    return _STATUS_LABELS.get(status, "未知状态")
+
 
 class EmailNotifier:
     def __init__(self, config: Config):
         self.config = config
 
     def send(self, title: str, url: str, status: str) -> None:
-        subject = f"[开票提醒] {title} 已开售"
+        label = _status_label(status)
+        subject = f"[开票提醒] {title} {label}"
         body = (
             f"演出：{title}\n"
-            f"状态：{'已开售' if status == 'on_sale' else status}\n"
+            f"状态：{label}\n"
             f"链接：{url}\n"
         )
 

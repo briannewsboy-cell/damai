@@ -16,6 +16,14 @@ on:
 permissions:
   contents: write
 
+# Polling runs last ~5 minutes and the cron fires every 5 minutes, so two
+# runs can overlap and race on state.json (duplicate notifications). Only one
+# run per group is allowed at a time; queued runs wait, never cancel, so a
+# late-arriving run still commits state before the next begins.
+concurrency:
+  group: monitor
+  cancel-in-progress: false
+
 jobs:
   monitor:
     runs-on: ubuntu-latest

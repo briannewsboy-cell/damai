@@ -12,6 +12,13 @@ RETRY_EXCEPTIONS = (
     requests.exceptions.HTTPError,
 )
 
+# API-level success codes. ServerChan/PushPlus can return HTTP 200 with a
+# nonzero JSON ``code``; raise_for_status() alone misses those.
+SUCCESS_CODES = {
+    "serverchan": 0,
+    "pushplus": 200,
+}
+
 
 class WeChatNotifier:
     def __init__(self, config: Config):
@@ -34,9 +41,29 @@ class WeChatNotifier:
         else:
             raise ValueError(f"Unsupported wechat_provider: {self.config.wechat_provider}")
 
+        provider = self.config.wechat_provider
+
         def do() -> requests.Response:
             resp = requests.post(endpoint, data=payload, timeout=10)
             resp.raise_for_status()
+            # raise_for_status only catches HTTP errors. ServerChan/PushPlus
+            # return HTTP 200 with a nonzero JSON ``code`` on API-level
+            # failures (bad token, rate limit, etc.). Parse the body and
+            # raise so run_once can flag the failure and retry next run.
+            try:
+                data = resp.json()
+            except ValueError as e:
+                raise RuntimeError(
+                    f"WeChat {provider} returned non-JSON response: "
+                    f"{resp.text[:200]!r}"
+                ) from e
+            expected = SUCCESS_CODES[provider]
+            code = data.get("code")
+            if code != expected:
+                msg = data.get("message") or data.get("msg") or data
+                raise RuntimeError(
+                    f"WeChat {provider} API error: code={code}, message={msg}"
+                )
             return resp
 
         with_retry(

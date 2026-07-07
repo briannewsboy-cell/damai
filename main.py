@@ -32,6 +32,19 @@ def is_within_run_window(now: Optional[datetime] = None) -> bool:
     return RUN_WINDOW_START <= now.hour < RUN_WINDOW_END
 
 
+def seconds_until_window_end(now: Optional[datetime] = None) -> int:
+    """Seconds remaining until the 20:00 CST window boundary.
+
+    Returns 0 if ``now`` is at or past 20:00 CST. Used to cap polling
+    duration so a delayed trigger near 19:55 cannot run checks past 20:00.
+    """
+    if now is None:
+        now = datetime.now(TZ)
+    end = now.replace(hour=RUN_WINDOW_END, minute=0, second=0, microsecond=0)
+    remaining = (end - now).total_seconds()
+    return max(0, int(remaining))
+
+
 def should_use_polling_mode(now: Optional[datetime] = None) -> bool:
     if now is None:
         now = datetime.now(TZ)
@@ -140,8 +153,14 @@ def main() -> None:
         return
 
     if should_use_polling_mode(now):
-        logger.info("Entering polling mode (1-minute checks for 5 minutes)")
-        run_polling(config, duration_seconds=300, interval_seconds=60)
+        # Cap the duration to the remaining window time so a delayed trigger
+        # (e.g. 19:55) cannot run checks past 20:00 CST.
+        remaining = seconds_until_window_end(now)
+        duration = min(300, remaining)
+        logger.info(
+            "Entering polling mode (1-minute checks for %d seconds)", duration
+        )
+        run_polling(config, duration_seconds=duration, interval_seconds=60)
     else:
         logger.info("Running single check")
         run_once(config)

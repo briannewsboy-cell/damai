@@ -14,6 +14,7 @@ from main import (
     is_within_run_window,
     run_once,
     run_polling,
+    seconds_until_window_end,
     should_use_polling_mode,
 )
 from state import State
@@ -484,3 +485,105 @@ def test_run_once_resets_checker_failed_flag_on_success(config):
         mock_save.assert_called_once()
         saved_state = mock_save.call_args[0][1]
         assert saved_state.checker_failed_notified is False
+
+
+# --- Polling window cap (Important fix #2) -------------------------------
+
+
+def test_seconds_until_window_end_midday():
+    """At 12:00 CST, 8 hours remain until 20:00."""
+    tz = pytz.timezone("Asia/Shanghai")
+    now = tz.localize(datetime(2026, 7, 25, 12, 0, 0))
+    assert seconds_until_window_end(now) == 8 * 3600
+
+
+def test_seconds_until_window_end_near_boundary():
+    """At 19:55:00 CST, exactly 300 seconds remain."""
+    tz = pytz.timezone("Asia/Shanghai")
+    now = tz.localize(datetime(2026, 7, 25, 19, 55, 0))
+    assert seconds_until_window_end(now) == 300
+
+
+def test_seconds_until_window_end_just_inside():
+    """At 19:59:30 CST, 30 seconds remain (sub-minute precision)."""
+    tz = pytz.timezone("Asia/Shanghai")
+    now = tz.localize(datetime(2026, 7, 25, 19, 59, 30))
+    assert seconds_until_window_end(now) == 30
+
+
+def test_seconds_until_window_end_at_boundary_is_zero():
+    """At exactly 20:00:00 CST, 0 seconds remain (not negative)."""
+    tz = pytz.timezone("Asia/Shanghai")
+    now = tz.localize(datetime(2026, 7, 25, 20, 0, 0))
+    assert seconds_until_window_end(now) == 0
+
+
+def test_seconds_until_window_end_past_boundary_is_zero():
+    """Past 20:00 CST, the remaining time is clamped to 0."""
+    tz = pytz.timezone("Asia/Shanghai")
+    now = tz.localize(datetime(2026, 7, 25, 23, 30, 0))
+    assert seconds_until_window_end(now) == 0
+
+
+def test_main_caps_polling_duration_near_window_end(config):
+    """A delayed trigger near 19:55 caps duration to the remaining window time.
+
+    Important fix #2: main() computes min(300, remaining_seconds) so a
+    delayed 19:55 trigger cannot run checks past 20:00 CST. At 19:58, only
+    120 seconds remain, so duration_seconds must be 120 (not 300).
+    """
+    tz = pytz.timezone("Asia/Shanghai")
+    now = tz.localize(datetime(2026, 7, 25, 19, 58, 0))  # 120s remaining
+
+    with patch("main.load_config", return_value=config), \
+         patch("main.datetime") as mock_datetime, \
+         patch("main.is_within_run_window", return_value=True), \
+         patch("main.should_use_polling_mode", return_value=True), \
+         patch("main.run_polling") as mock_run_polling:
+        # main() uses `datetime.now(TZ)`; redirect to a fixed time.
+        mock_datetime.now.return_value = now
+
+        from main import main
+        main()
+
+        mock_run_polling.assert_called_once()
+        kwargs = mock_run_polling.call_args.kwargs
+        assert kwargs["duration_seconds"] == 120
+        assert kwargs["interval_seconds"] == 60
+
+
+def test_main_polling_duration_capped_at_300_midday(config):
+    """Midday, 300s cap applies (8h remaining > 300s, so duration stays 300)."""
+    tz = pytz.timezone("Asia/Shanghai")
+    now = tz.localize(datetime(2026, 7, 25, 12, 0, 0))
+
+    with patch("main.load_config", return_value=config), \
+         patch("main.datetime") as mock_datetime, \
+         patch("main.is_within_run_window", return_value=True), \
+         patch("main.should_use_polling_mode", return_value=True), \
+         patch("main.run_polling") as mock_run_polling:
+        mock_datetime.now.return_value = now
+
+        from main import main
+        main()
+
+        kwargs = mock_run_polling.call_args.kwargs
+        assert kwargs["duration_seconds"] == 300
+
+
+def test_main_polling_duration_zero_at_window_end(config):
+    """At exactly 20:00, main() exits before polling (is_within_run_window False)."""
+    tz = pytz.timezone("Asia/Shanghai")
+    now = tz.localize(datetime(2026, 7, 25, 20, 0, 0))
+
+    with patch("main.load_config", return_value=config), \
+         patch("main.datetime") as mock_datetime, \
+         patch("main.is_within_run_window", return_value=False), \
+         patch("main.should_use_polling_mode", return_value=True), \
+         patch("main.run_polling") as mock_run_polling:
+        mock_datetime.now.return_value = now
+
+        from main import main
+        main()
+
+        mock_run_polling.assert_not_called()
