@@ -1,5 +1,3 @@
-import json
-import pytest
 from state import State, load_state, save_state, should_notify
 
 
@@ -34,3 +32,36 @@ def test_should_not_notify_when_already_notified():
     old = State(last_status="on_sale", notified=True)
     new = State(last_status="on_sale", notified=True)
     assert should_notify(old, new) is False
+
+
+def test_should_not_notify_when_new_is_not_on_sale():
+    """should_notify returns False when new.last_status is not 'on_sale'."""
+    old = State(last_status="not_on_sale", notified=False)
+    new = State(last_status="not_on_sale", notified=False)
+    assert should_notify(old, new) is False
+
+    old2 = State(last_status="on_sale", notified=False)
+    new2 = State(last_status="not_on_sale", notified=False)
+    assert should_notify(old2, new2) is False
+
+
+def test_load_state_handles_malformed_json(tmp_path):
+    path = tmp_path / "broken.json"
+    path.write_text("{this is not valid json")
+    state = load_state(str(path))
+    assert state == State()
+
+
+def test_load_state_handles_empty_file(tmp_path):
+    path = tmp_path / "empty.json"
+    path.write_text("")
+    state = load_state(str(path))
+    assert state == State()
+
+
+def test_load_state_ignores_unknown_fields(tmp_path):
+    path = tmp_path / "extra.json"
+    path.write_text('{"last_status": "on_sale", "extra_field": "should be ignored"}')
+    state = load_state(str(path))
+    assert state.last_status == "on_sale"
+    assert state.notified is False  # default preserved

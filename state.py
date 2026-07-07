@@ -16,14 +16,21 @@ class State:
 def load_state(path: str = "state.json") -> State:
     if not os.path.exists(path):
         return State()
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    return State(**data)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except json.JSONDecodeError:
+        return State()
+    known_fields = {f.name for f in State.__dataclass_fields__.values()}
+    filtered = {k: v for k, v in data.items() if k in known_fields}
+    return State(**filtered)
 
 
 def save_state(path: str, state: State) -> None:
-    with open(path, "w", encoding="utf-8") as f:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(asdict(state), f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
 
 
 def should_notify(old: State, new: State) -> bool:
