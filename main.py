@@ -18,6 +18,12 @@ TZ = pytz.timezone("Asia/Shanghai")
 RUN_WINDOW_START = 9
 RUN_WINDOW_END = 20
 POLL_SWITCH_DATE = "2026-07-20"
+POLL_END_DATE = "2026-07-31"
+
+# Status passed to notifiers when the checker itself is broken and a
+# one-time fallback alert is sent. Notifiers render the raw status string.
+CHECKER_FAILED_STATUS = "checker_failed"
+CHECKER_FAILED_MESSAGE = "检查器失效，请人工查看"
 
 
 def is_within_run_window(now: Optional[datetime] = None) -> bool:
@@ -29,27 +35,76 @@ def is_within_run_window(now: Optional[datetime] = None) -> bool:
 def should_use_polling_mode(now: Optional[datetime] = None) -> bool:
     if now is None:
         now = datetime.now(TZ)
-    return now.strftime("%Y-%m-%d") >= POLL_SWITCH_DATE
+    today = now.strftime("%Y-%m-%d")
+    return POLL_SWITCH_DATE <= today <= POLL_END_DATE
+
+
+def _send_checker_failure_alert(config: Config) -> None:
+    """Send the one-time checker-failure fallback alert.
+
+    Each notifier is attempted independently so an SMTP outage doesn't block
+    WeChat (and vice versa). Failures are logged, never raised.
+    """
+    for name, notifier in (
+        ("email", EmailNotifier(config)),
+        ("wechat", WeChatNotifier(config)),
+    ):
+        try:
+            notifier.send(CHECKER_FAILED_MESSAGE, "", CHECKER_FAILED_STATUS)
+        except Exception as e:  # noqa: BLE001 - best-effort alert
+            logger.exception("%s notifier failed during checker-failure alert: %s", name, e)
 
 
 def run_once(config: Config, state_path: str = "state.json") -> None:
     old_state = load_state(state_path)
     checker = HttpDamaiChecker(config)
-    result = checker.check()
 
+    try:
+        result = checker.check()
+    except Exception as e:  # noqa: BLE001 - checker is I/O-bound and unpredictable
+        logger.exception("Checker failed: %s", e)
+        if not old_state.checker_failed_notified:
+            logger.warning("Sending one-time checker-failure alert")
+            _send_checker_failure_alert(config)
+        new_state = State(
+            last_status=old_state.last_status,
+            last_title=old_state.last_title,
+            last_url=old_state.last_url,
+            last_checked_at=old_state.last_checked_at,
+            notified=old_state.notified,
+            checker_failed_notified=True,
+        )
+        save_state(state_path, new_state)
+        return
+
+    # Successful check clears any prior checker-failure flag.
     new_state = State(
         last_status=result.status,
         last_title=result.title,
         last_url=result.url,
         last_checked_at=result.checked_at,
         notified=False,
+        checker_failed_notified=False,
     )
 
     if should_notify(old_state, new_state):
         logger.info("Status changed to on_sale, sending notifications")
-        EmailNotifier(config).send(result.title, result.url, result.status)
-        WeChatNotifier(config).send(result.title, result.url, result.status)
-        new_state.notified = True
+        # Each notifier is attempted independently: an SMTP failure must not
+        # prevent WeChat (and vice versa). State is always persisted below.
+        any_succeeded = False
+        for name, notifier in (
+            ("email", EmailNotifier(config)),
+            ("wechat", WeChatNotifier(config)),
+        ):
+            try:
+                notifier.send(result.title, result.url, result.status)
+                any_succeeded = True
+            except Exception as e:  # noqa: BLE001 - log and continue
+                logger.exception("%s notifier failed: %s", name, e)
+        # Mark notified iff at least one channel succeeded; if both failed
+        # leave notified=False so both retry on the next run.
+        if any_succeeded:
+            new_state.notified = True
     elif new_state.last_status == "on_sale" and old_state.notified:
         new_state.notified = True
     else:

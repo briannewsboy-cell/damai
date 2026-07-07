@@ -11,6 +11,10 @@ class State:
     last_url: Optional[str] = None
     last_checked_at: Optional[str] = None
     notified: bool = False
+    # Set True after a one-time checker-failure alert is sent so we don't
+    # re-notify on every subsequent failed run. Reset to False on the next
+    # successful check.
+    checker_failed_notified: bool = False
 
 
 def load_state(path: str = "state.json") -> State:
