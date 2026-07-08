@@ -1,3 +1,7 @@
+import gzip
+import json
+from unittest.mock import Mock
+
 import responses
 import pytest
 from config import Config
@@ -284,3 +288,35 @@ def test_http_checker_retries_on_transient_non_json(config, monkeypatch):
     assert len(search_calls) == 3
 
 
+def test_playwright_try_parse_response_plain_json(config):
+    response = Mock()
+    response.json.return_value = {"data": {"list": []}}
+    checker = PlaywrightDamaiChecker(config)
+    assert checker._try_parse_response(response) == {"data": {"list": []}}
+
+
+def test_playwright_try_parse_response_gzip_json(config):
+    raw = gzip.compress(json.dumps({"data": {"list": [{"name": "test"}]}}).encode("utf-8"))
+    response = Mock()
+    response.json.side_effect = UnicodeDecodeError("utf-8", raw, 0, 1, "bad")
+    response.body.return_value = raw
+    checker = PlaywrightDamaiChecker(config)
+    assert checker._try_parse_response(response) == {"data": {"list": [{"name": "test"}]}}
+
+
+def test_playwright_try_parse_response_gbk_json(config):
+    text = '{"data":{"list":[{"name":"测试"}]}}'
+    raw = text.encode("gbk")
+    response = Mock()
+    response.json.side_effect = UnicodeDecodeError("utf-8", raw, 0, 1, "bad")
+    response.body.return_value = raw
+    checker = PlaywrightDamaiChecker(config)
+    assert checker._try_parse_response(response) == {"data": {"list": [{"name": "测试"}]}}
+
+
+def test_playwright_try_parse_response_returns_none_for_invalid_json(config):
+    response = Mock()
+    response.json.side_effect = UnicodeDecodeError("utf-8", b"not json", 0, 1, "bad")
+    response.body.return_value = b"not json"
+    checker = PlaywrightDamaiChecker(config)
+    assert checker._try_parse_response(response) is None

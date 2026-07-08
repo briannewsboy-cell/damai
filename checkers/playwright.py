@@ -1,3 +1,4 @@
+import gzip
 import json
 import logging
 from datetime import datetime
@@ -54,13 +55,14 @@ class PlaywrightDamaiChecker:
                     return
                 if response.request.method != "GET":
                     return
-                try:
-                    captured["data"] = response.json()
+                parsed = self._try_parse_response(response)
+                if parsed is not None:
+                    captured["data"] = parsed
                     logger.info("Captured searchajax JSON via Playwright")
-                except Exception:  # noqa: BLE001 - JSON may be absent
-                    body = response.text()[:200]
+                else:
                     logger.warning(
-                        "searchajax response via Playwright was not JSON: %r", body
+                        "searchajax response via Playwright was not parseable JSON (url=%s)",
+                        response.url,
                     )
 
             page.on("response", handle_response)
@@ -159,6 +161,53 @@ class PlaywrightDamaiChecker:
             logger.info("Extracted %d result(s) from rendered DOM", len(items))
             return {"data": {"list": items}}
         return None
+
+    def _try_parse_response(self, response) -> dict | None:
+        """Best-effort JSON extraction from a Playwright response.
+
+        Playwright's ``response.json()`` assumes UTF-8 text. Damai sometimes
+        serves gzip-compressed or GBK-encoded responses that crash the default
+        decoder and, if unhandled, propagate out of the response callback. This
+        method tries the simple path first, then falls back to raw bytes with
+        gzip/encoding handling, and finally returns ``None`` instead of raising.
+        """
+        # Fast path: works for plain UTF-8 JSON.
+        try:
+            return response.json()
+        except Exception:
+            pass
+
+        # Slow path: get raw bytes and handle compression/encodings manually.
+        try:
+            body = response.body()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Could not read response body: %s", e)
+            return None
+
+        # Decompress if it looks like gzip.
+        if body.startswith(b"\x1f\x8b"):
+            try:
+                body = gzip.decompress(body)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Failed to decompress gzip response: %s", e)
+
+        text = None
+        for encoding in ("utf-8", "gbk", "gb18030", "latin-1"):
+            try:
+                text = body.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+
+        if text is None:
+            logger.warning("Could not decode response body with any known encoding")
+            return None
+
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            logger.warning("Decoded body is not valid JSON: %s", e)
+            return None
 
     def _pick_best_item(self, items: list[dict]) -> dict:
         keyword = self.config.concert_keyword.replace(" ", "")
