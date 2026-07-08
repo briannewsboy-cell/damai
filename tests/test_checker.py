@@ -5,7 +5,7 @@ from unittest.mock import Mock
 import responses
 import pytest
 from config import Config
-from checkers.base import DamaiBlockedError
+from checkers.base import DamaiBlockedError, parse_detail_sale_status, parse_sale_status
 from checkers.http import HttpDamaiChecker
 from checkers.playwright import PlaywrightDamaiChecker
 
@@ -14,6 +14,7 @@ from checkers.playwright import PlaywrightDamaiChecker
 def config():
     return Config(
         concert_keyword="刘宪华 苏州 演唱会",
+        concert_detail_url=None,
         smtp_host="smtp.example.com",
         smtp_port=587,
         smtp_user="sender@example.com",
@@ -320,3 +321,79 @@ def test_playwright_try_parse_response_returns_none_for_invalid_json(config):
     response.body.return_value = b"not json"
     checker = PlaywrightDamaiChecker(config)
     assert checker._try_parse_response(response) is None
+
+
+def test_parse_sale_status_detects_presale():
+    assert parse_sale_status("<div>预售</div>") is False
+    assert parse_sale_status("<div>即将开售</div>") is False
+
+
+def test_parse_sale_status_detects_on_sale():
+    assert parse_sale_status("<button>立即购买</button>") is True
+    assert parse_sale_status("<button>选座购买</button>") is True
+
+
+def test_parse_detail_sale_status_no_presale_means_on_sale():
+    """For a known detail URL, absence of pre-sale phrases means on sale."""
+    assert parse_detail_sale_status("<html><body>演出详情</body></html>") is True
+    assert parse_detail_sale_status("<html><body>购票须知</body></html>") is True
+
+
+def test_parse_detail_sale_status_presale_means_not_on_sale():
+    assert parse_detail_sale_status("<html><body>本商品为预售</body></html>") is False
+
+
+@responses.activate
+def test_http_checker_detail_url_presale(config):
+    config_with_detail = Config(
+        concert_keyword=config.concert_keyword,
+        concert_detail_url="https://detail.damai.cn/item.htm?id=1061600015576",
+        smtp_host=config.smtp_host,
+        smtp_port=config.smtp_port,
+        smtp_user=config.smtp_user,
+        smtp_password=config.smtp_password,
+        email_to=config.email_to,
+        wechat_token=config.wechat_token,
+        wechat_provider=config.wechat_provider,
+    )
+    responses.add(
+        responses.GET,
+        "https://detail.damai.cn/item.htm?id=1061600015576",
+        body="<html><body>本商品为预售</body></html>",
+        status=200,
+    )
+
+    checker = HttpDamaiChecker(config_with_detail)
+    result = checker.check()
+
+    assert result.status == "not_on_sale"
+    assert result.url == "https://detail.damai.cn/item.htm?id=1061600015576"
+    # No search request should be made when detail URL is configured.
+    assert all("search.damai.cn" not in call.request.url for call in responses.calls)
+
+
+@responses.activate
+def test_http_checker_detail_url_no_presale_means_on_sale(config):
+    config_with_detail = Config(
+        concert_keyword=config.concert_keyword,
+        concert_detail_url="https://detail.damai.cn/item.htm?id=1061600015576",
+        smtp_host=config.smtp_host,
+        smtp_port=config.smtp_port,
+        smtp_user=config.smtp_user,
+        smtp_password=config.smtp_password,
+        email_to=config.email_to,
+        wechat_token=config.wechat_token,
+        wechat_provider=config.wechat_provider,
+    )
+    responses.add(
+        responses.GET,
+        "https://detail.damai.cn/item.htm?id=1061600015576",
+        body="<html><body>演出详情</body></html>",
+        status=200,
+    )
+
+    checker = HttpDamaiChecker(config_with_detail)
+    result = checker.check()
+
+    assert result.status == "on_sale"
+    assert result.url == "https://detail.damai.cn/item.htm?id=1061600015576"

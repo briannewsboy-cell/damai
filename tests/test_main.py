@@ -24,6 +24,7 @@ from state import State
 def config():
     return Config(
         concert_keyword="刘宪华 苏州 演唱会",
+        concert_detail_url=None,
         smtp_host="smtp.example.com",
         smtp_port=587,
         smtp_user="sender@example.com",

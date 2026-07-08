@@ -38,6 +38,7 @@ HTTP checker 优先；当大麦返回反爬/CAPTCHA 页面时，自动回退到 
 | Secret | 说明 |
 | --- | --- |
 | CONCERT_KEYWORD | 搜索关键词，默认：刘宪华 苏州 演唱会 |
+| CONCERT_DETAIL_URL | 指定详情页 URL（可选），设置后跳过搜索直接检查该页面，无「预售」即认为在售 |
 | SMTP_HOST | SMTP 服务器 |
 | SMTP_PORT | SMTP 端口 |
 | SMTP_USER | 发件邮箱 |

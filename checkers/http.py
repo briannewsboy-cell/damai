@@ -6,7 +6,7 @@ from urllib.parse import urljoin
 import pytz
 import requests
 
-from checkers.base import ConcertResult, DamaiBlockedError
+from checkers.base import ConcertResult, DamaiBlockedError, parse_detail_sale_status, parse_sale_status
 from config import Config
 from retry import with_retry
 
@@ -49,6 +49,27 @@ class HttpDamaiChecker:
         )
 
     def check(self) -> ConcertResult:
+        if self.config.concert_detail_url:
+            return self._check_detail_page(self.config.concert_detail_url)
+        return self._check_via_search()
+
+    def _check_detail_page(self, detail_url: str) -> ConcertResult:
+        """Check a known detail URL directly."""
+        logger.info("Checking configured detail URL: %s", detail_url)
+        detail_response = self._get_with_retry(detail_url)
+        html = detail_response.text
+        on_sale = parse_detail_sale_status(html)
+        # Extract a readable title from the URL or fall back to the keyword.
+        title = self.config.concert_keyword
+        return ConcertResult(
+            title=title,
+            url=detail_url,
+            status="on_sale" if on_sale else "not_on_sale",
+            on_sale=on_sale,
+            checked_at=datetime.now(TZ).isoformat(),
+        )
+
+    def _check_via_search(self) -> ConcertResult:
         search_url = "https://search.damai.cn/searchajax.html"
         params = {
             "keyword": self.config.concert_keyword,
@@ -80,7 +101,7 @@ class HttpDamaiChecker:
         title = item.get("name", "")
 
         detail_response = self._get_with_retry(detail_url)
-        on_sale = self._parse_sale_status(detail_response.text)
+        on_sale = parse_sale_status(detail_response.text)
 
         return ConcertResult(
             title=title,
@@ -154,7 +175,3 @@ class HttpDamaiChecker:
                 best_score = score
                 best = item
         return best
-
-    def _parse_sale_status(self, html: str) -> bool:
-        sale_phrases = ["立即购买", "购票", "选座购买", "马上预订"]
-        return any(phrase in html for phrase in sale_phrases)

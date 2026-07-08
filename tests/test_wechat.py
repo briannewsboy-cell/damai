@@ -10,6 +10,7 @@ from notifiers.wechat import WeChatNotifier
 def config_serverchan():
     return Config(
         concert_keyword="刘宪华 苏州 演唱会",
+        concert_detail_url=None,
         smtp_host="smtp.example.com",
         smtp_port=587,
         smtp_user="sender@example.com",
@@ -24,6 +25,7 @@ def config_serverchan():
 def config_pushplus():
     return Config(
         concert_keyword="刘宪华 苏州 演唱会",
+        concert_detail_url=None,
         smtp_host="smtp.example.com",
         smtp_port=587,
         smtp_user="sender@example.com",

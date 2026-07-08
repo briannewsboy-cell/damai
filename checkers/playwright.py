@@ -6,7 +6,7 @@ from urllib.parse import urljoin, urlparse
 
 import pytz
 
-from checkers.base import ConcertResult, DamaiBlockedError
+from checkers.base import ConcertResult, DamaiBlockedError, parse_detail_sale_status, parse_sale_status
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -39,6 +39,37 @@ class PlaywrightDamaiChecker:
                 "Playwright is not installed; install it with 'pip install playwright'"
             ) from e
 
+        if self.config.concert_detail_url:
+            return self._check_detail_page(sync_playwright)
+        return self._check_via_search(sync_playwright)
+
+    def _check_detail_page(self, sync_playwright) -> ConcertResult:
+        """Check a known detail URL directly using Playwright."""
+        detail_url = self.config.concert_detail_url
+        logger.info("Checking configured detail URL with Playwright: %s", detail_url)
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                viewport={"width": 1280, "height": 800},
+                locale="zh-CN",
+                timezone_id="Asia/Shanghai",
+            )
+            page = context.new_page()
+            page.goto(detail_url, wait_until="networkidle", timeout=30000)
+            detail_html = page.content()
+            browser.close()
+
+        on_sale = parse_detail_sale_status(detail_html)
+        title = self.config.concert_keyword
+        return ConcertResult(
+            title=title,
+            url=detail_url,
+            status="on_sale" if on_sale else "not_on_sale",
+            on_sale=on_sale,
+            checked_at=self._now_iso(),
+        )
+
+    def _check_via_search(self, sync_playwright) -> ConcertResult:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(
@@ -142,7 +173,7 @@ class PlaywrightDamaiChecker:
             detail_html = page.content()
             browser.close()
 
-        on_sale = self._parse_sale_status(detail_html)
+        on_sale = parse_sale_status(detail_html)
         return ConcertResult(
             title=title,
             url=detail_url,
@@ -236,10 +267,6 @@ class PlaywrightDamaiChecker:
                 best_score = score
                 best = item
         return best
-
-    def _parse_sale_status(self, html: str) -> bool:
-        sale_phrases = ["立即购买", "购票", "选座购买", "马上预订"]
-        return any(phrase in html for phrase in sale_phrases)
 
     def _now_iso(self) -> str:
         return datetime.now(TZ).isoformat()

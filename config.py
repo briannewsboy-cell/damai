@@ -5,6 +5,7 @@ import os
 @dataclass(frozen=True)
 class Config:
     concert_keyword: str
+    concert_detail_url: str | None
     smtp_host: str
     smtp_port: int
     smtp_user: str
@@ -17,6 +18,7 @@ class Config:
 def load_config() -> Config:
     return Config(
         concert_keyword=os.environ.get("CONCERT_KEYWORD", "刘宪华 苏州 演唱会"),
+        concert_detail_url=os.environ.get("CONCERT_DETAIL_URL"),
         smtp_host=os.environ["SMTP_HOST"],
         smtp_port=int(os.environ["SMTP_PORT"]),
         smtp_user=os.environ["SMTP_USER"],

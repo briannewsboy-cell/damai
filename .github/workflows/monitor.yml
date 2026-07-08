@@ -46,6 +46,7 @@ jobs:
       - name: Run monitor
         env:
           CONCERT_KEYWORD: ${{ secrets.CONCERT_KEYWORD }}
+          CONCERT_DETAIL_URL: ${{ secrets.CONCERT_DETAIL_URL }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
