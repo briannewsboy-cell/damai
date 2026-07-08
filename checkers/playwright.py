@@ -2,7 +2,7 @@ import gzip
 import json
 import logging
 from datetime import datetime
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import pytz
 
@@ -50,20 +50,33 @@ class PlaywrightDamaiChecker:
 
             captured: dict = {}
 
-            def handle_response(response) -> None:
-                if "searchajax.html" not in response.url:
-                    return
+            def is_search_ajax(response) -> bool:
+                """Return True only for the real search JSON endpoint.
+
+                Damai's anti-bot flow issues redirect/punish URLs that also
+                contain ``searchajax.html`` (e.g. ``/searchajax.html/_____tmd_____/punish``).
+                Those must not overwrite a valid captured result.
+                """
                 if response.request.method != "GET":
+                    return False
+                parsed = urlparse(response.url)
+                return parsed.path == "/searchajax.html"
+
+            def handle_response(response) -> None:
+                if not is_search_ajax(response):
                     return
                 parsed = self._try_parse_response(response)
-                if parsed is not None:
+                if parsed is None:
+                    return
+                items = parsed.get("data", {}).get("list", [])
+                logger.info(
+                    "Intercepted searchajax response with %d item(s)", len(items)
+                )
+                # Keep the response with the most results. Later CAPTCHA/empty
+                # responses must not overwrite an earlier valid result.
+                existing_items = captured.get("data", {}).get("list", [])
+                if len(items) >= len(existing_items):
                     captured["data"] = parsed
-                    logger.info("Captured searchajax JSON via Playwright")
-                else:
-                    logger.warning(
-                        "searchajax response via Playwright was not parseable JSON (url=%s)",
-                        response.url,
-                    )
 
             page.on("response", handle_response)
 
