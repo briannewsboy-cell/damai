@@ -326,6 +326,7 @@ def test_playwright_try_parse_response_returns_none_for_invalid_json(config):
 def test_parse_sale_status_detects_presale():
     assert parse_sale_status("<div>预售</div>") is False
     assert parse_sale_status("<div>即将开售</div>") is False
+    assert parse_sale_status("<button>缺货登记</button>") is False
 
 
 def test_parse_sale_status_detects_on_sale():
@@ -333,10 +334,17 @@ def test_parse_sale_status_detects_on_sale():
     assert parse_sale_status("<button>选座购买</button>") is True
 
 
-def test_parse_detail_sale_status_no_presale_means_on_sale():
-    """For a known detail URL, absence of pre-sale phrases means on sale."""
-    assert parse_detail_sale_status("<html><body>演出详情</body></html>") is True
-    assert parse_detail_sale_status("<html><body>购票须知</body></html>") is True
+def test_parse_sale_status_ignores_broad_purchase_phrases():
+    """购票 appears in notices like 购票须知 and must not trigger on_sale."""
+    assert parse_sale_status("<div>购票须知</div>") is False
+    assert parse_sale_status("<div>实名制购票和入场</div>") is False
+
+
+def test_parse_detail_sale_status_requires_explicit_sale_button():
+    """For a known detail URL, absence of pre-sale markers is not enough."""
+    assert parse_detail_sale_status("<html><body>演出详情</body></html>") is False
+    assert parse_detail_sale_status("<html><body>购票须知</body></html>") is False
+    assert parse_detail_sale_status("<button>立即购买</button>") is True
 
 
 def test_parse_detail_sale_status_presale_means_not_on_sale():
@@ -373,7 +381,8 @@ def test_http_checker_detail_url_presale(config):
 
 
 @responses.activate
-def test_http_checker_detail_url_no_presale_means_on_sale(config):
+def test_http_checker_detail_url_no_presale_but_no_sale_button(config):
+    """A detail page without pre-sale text but also without sale button is not on sale."""
     config_with_detail = Config(
         concert_keyword=config.concert_keyword,
         concert_detail_url="https://detail.damai.cn/item.htm?id=1061600015576",
@@ -388,7 +397,33 @@ def test_http_checker_detail_url_no_presale_means_on_sale(config):
     responses.add(
         responses.GET,
         "https://detail.damai.cn/item.htm?id=1061600015576",
-        body="<html><body>演出详情</body></html>",
+        body="<html><body>该渠道不支持购票</body></html>",
+        status=200,
+    )
+
+    checker = HttpDamaiChecker(config_with_detail)
+    result = checker.check()
+
+    assert result.status == "not_on_sale"
+
+
+@responses.activate
+def test_http_checker_detail_url_on_sale(config):
+    config_with_detail = Config(
+        concert_keyword=config.concert_keyword,
+        concert_detail_url="https://detail.damai.cn/item.htm?id=1061600015576",
+        smtp_host=config.smtp_host,
+        smtp_port=config.smtp_port,
+        smtp_user=config.smtp_user,
+        smtp_password=config.smtp_password,
+        email_to=config.email_to,
+        wechat_token=config.wechat_token,
+        wechat_provider=config.wechat_provider,
+    )
+    responses.add(
+        responses.GET,
+        "https://detail.damai.cn/item.htm?id=1061600015576",
+        body="<html><body><button>立即购买</button></body></html>",
         status=200,
     )
 

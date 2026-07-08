@@ -20,8 +20,8 @@ class DamaiBlockedError(RuntimeError):
     """Raised when Damai returns an anti-bot/CAPTCHA page instead of data."""
 
 
-NOT_SALE_PHRASES = ["预售", "即将开售"]
-SALE_PHRASES = ["立即购买", "购票", "选座购买", "马上预订"]
+NOT_SALE_PHRASES = ["预售", "即将开售", "缺货登记", "预约抢票"]
+SALE_PHRASES = ["立即购买", "选座购买", "马上预订"]
 
 
 def parse_sale_status(html: str, detail_mode: bool = False) -> bool:
@@ -29,18 +29,15 @@ def parse_sale_status(html: str, detail_mode: bool = False) -> bool:
 
     Args:
         html: The page HTML.
-        detail_mode: When True, the page is a known detail URL and the absence
-            of pre-sale phrases is treated as on-sale. This matches the rule
-            "no 预售 means on sale" for a specific concert page.
+        detail_mode: Kept for backwards compatibility; the logic is now the same
+            for both search and direct-detail flows.
 
     Returns:
-        True if the page indicates tickets are on sale.
+        True only when the page contains explicit on-sale button text and no
+        pre-sale/out-of-stock markers.
     """
     if any(phrase in html for phrase in NOT_SALE_PHRASES):
         return False
-    if detail_mode:
-        # For a known detail page, no pre-sale marker means on sale.
-        return True
     return any(phrase in html for phrase in SALE_PHRASES)
 
 
