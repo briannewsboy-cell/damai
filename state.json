@@ -1,8 +1,8 @@
 {
   "last_status": "not_on_sale",
-  "last_title": null,
-  "last_url": null,
-  "last_checked_at": null,
+  "last_title": "",
+  "last_url": "",
+  "last_checked_at": "2026-07-08T10:31:01.621940+08:00",
   "notified": false,
-  "checker_failed_notified": true
+  "checker_failed_notified": false
 }
