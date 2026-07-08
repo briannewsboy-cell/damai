@@ -1,8 +1,8 @@
 {
-  "last_status": "not_on_sale",
-  "last_title": "",
-  "last_url": "",
-  "last_checked_at": "2026-07-08T10:47:30.966691+08:00",
-  "notified": false,
+  "last_status": "on_sale",
+  "last_title": "刘宪华 苏州 演唱会",
+  "last_url": "https://detail.damai.cn/item.htm?id=1061600015576",
+  "last_checked_at": "2026-07-08T11:09:09.812917+08:00",
+  "notified": true,
   "checker_failed_notified": false
 }
