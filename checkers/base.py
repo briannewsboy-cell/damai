@@ -14,3 +14,7 @@ class ConcertResult:
 class DamaiChecker(Protocol):
     def check(self) -> ConcertResult:
         ...
+
+
+class DamaiBlockedError(RuntimeError):
+    """Raised when Damai returns an anti-bot/CAPTCHA page instead of data."""

@@ -1,7 +1,9 @@
 import responses
 import pytest
 from config import Config
+from checkers.base import DamaiBlockedError
 from checkers.http import HttpDamaiChecker
+from checkers.playwright import PlaywrightDamaiChecker
 
 
 @pytest.fixture
@@ -222,3 +224,63 @@ def test_http_checker_raises_after_retries_exhausted(config, monkeypatch):
         c for c in responses.calls if "search.damai.cn" in c.request.url
     ]
     assert len(search_calls) == 3
+
+
+@responses.activate
+def test_http_checker_detects_blocking_and_raises_damai_blocked(config, monkeypatch):
+    """A CAPTCHA/anti-bot HTML page raises DamaiBlockedError instead of JSONDecodeError."""
+    import retry as retry_mod
+
+    monkeypatch.setattr(retry_mod.time, "sleep", lambda _: None)
+
+    # All retries return the same anti-bot page.
+    anti_bot_html = "<html><script>window.location='_____tmd_____/punish?x5secdata=abc'</script></html>"
+    for _ in range(3):
+        responses.add(
+            responses.GET,
+            "https://search.damai.cn/searchajax.html",
+            body=anti_bot_html,
+            status=200,
+        )
+
+    checker = HttpDamaiChecker(config)
+    with pytest.raises(DamaiBlockedError):
+        checker.check()
+
+
+@responses.activate
+def test_http_checker_retries_on_transient_non_json(config, monkeypatch):
+    """A transient non-JSON 200 is retried when no anti-bot marker is present."""
+    import retry as retry_mod
+
+    monkeypatch.setattr(retry_mod.time, "sleep", lambda _: None)
+
+    responses.add(
+        responses.GET,
+        "https://search.damai.cn/searchajax.html",
+        body="not json",
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        "https://search.damai.cn/searchajax.html",
+        body="still not json",
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        "https://search.damai.cn/searchajax.html",
+        json={"data": {"list": []}},
+        status=200,
+    )
+
+    checker = HttpDamaiChecker(config)
+    result = checker.check()
+
+    assert result.status == "not_on_sale"
+    search_calls = [
+        c for c in responses.calls if "search.damai.cn" in c.request.url
+    ]
+    assert len(search_calls) == 3
+
+

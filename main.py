@@ -5,7 +5,9 @@ from typing import Optional
 
 import pytz
 
+from checkers.base import ConcertResult
 from checkers.http import HttpDamaiChecker
+from checkers.playwright import PlaywrightDamaiChecker
 from config import Config, load_config
 from notifiers.email import EmailNotifier
 from notifiers.wechat import WeChatNotifier
@@ -70,12 +72,10 @@ def _send_checker_failure_alert(config: Config) -> None:
 
 def run_once(config: Config, state_path: str = "state.json") -> None:
     old_state = load_state(state_path)
-    checker = HttpDamaiChecker(config)
 
-    try:
-        result = checker.check()
-    except Exception as e:  # noqa: BLE001 - checker is I/O-bound and unpredictable
-        logger.exception("Checker failed: %s", e)
+    result = _try_checkers(config)
+    if result is None:
+        # Both checkers failed; the inner exception has already been logged.
         if not old_state.checker_failed_notified:
             logger.warning("Sending one-time checker-failure alert")
             _send_checker_failure_alert(config)
@@ -124,6 +124,30 @@ def run_once(config: Config, state_path: str = "state.json") -> None:
         logger.info("No notification needed (status=%s)", result.status)
 
     save_state(state_path, new_state)
+
+
+def _try_checkers(config: Config) -> ConcertResult | None:
+    """Try the fast HTTP checker first, then fall back to Playwright.
+
+    Checkers are instantiated lazily so the Playwright browser is only launched
+    when the HTTP checker fails.
+
+    Returns ``None`` when both checkers fail so ``run_once`` can persist state
+    and send the one-time checker-failure alert.
+    """
+    for name, factory in (
+        ("http", lambda: HttpDamaiChecker(config)),
+        ("playwright", lambda: PlaywrightDamaiChecker(config)),
+    ):
+        try:
+            logger.info("Trying %s checker", name)
+            checker = factory()
+            return checker.check()
+        except Exception as e:  # noqa: BLE001 - checker is I/O-bound and unpredictable
+            logger.exception("%s checker failed: %s", name, e)
+
+    logger.error("All checkers failed")
+    return None
 
 
 def run_polling(

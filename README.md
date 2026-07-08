@@ -22,13 +22,14 @@ Workflow 每天 **北京时间 09:00–20:00** 每 5 分钟触发一次。最后
 | `main.py` | 入口、运行窗口/轮询切换、`run_once` 端到端流程 |
 | `config.py` | 从环境变量加载 `Config` |
 | `state.py` | `State` 持久化与 `should_notify` 去重判断 |
-| `checkers/http.py` | `HttpDamaiChecker`，基于 requests 读取大麦搜索/详情页 |
+| `checkers/http.py` | `HttpDamaiChecker`（requests 方案） |
+| `checkers/playwright.py` | `PlaywrightDamaiChecker`（浏览器 fallback） |
 | `checkers/base.py` | `ConcertResult` 数据类与 `DamaiChecker` 协议 |
 | `notifiers/email.py` | `EmailNotifier`（SMTP） |
 | `notifiers/wechat.py` | `WeChatNotifier`（Server 酱 / PushPlus） |
 | `.github/workflows/monitor.yml` | 定时触发并回写 `state.json` |
 
-Playwright 浏览器检测作为 HTTP checker 的后备方案，待 HTTP 方案不足时再接入（`main.py` 中替换 checker 类即可）。
+HTTP checker 优先；当大麦返回反爬/CAPTCHA 页面时，自动回退到 Playwright 浏览器 checker。
 
 ## 配置
 

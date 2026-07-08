@@ -1,15 +1,18 @@
 import logging
 from datetime import datetime
+from typing import Callable, TypeVar
 from urllib.parse import urljoin
 
 import pytz
 import requests
 
-from checkers.base import ConcertResult
+from checkers.base import ConcertResult, DamaiBlockedError
 from config import Config
 from retry import with_retry
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 TZ = pytz.timezone("Asia/Shanghai")
 
@@ -22,7 +25,12 @@ RETRY_EXCEPTIONS = (
     requests.exceptions.ConnectionError,
     requests.exceptions.Timeout,
     requests.exceptions.HTTPError,
+    requests.exceptions.JSONDecodeError,
 )
+
+# Markers in a non-JSON response body that indicate Damai's anti-bot/CAPTCHA
+# challenge rather than a transient server error.
+BLOCKED_MARKERS = ("_____tmd_____", "bxpunish", "captcha", "x5secdata")
 
 
 class HttpDamaiChecker:
@@ -46,8 +54,9 @@ class HttpDamaiChecker:
             "keyword": self.config.concert_keyword,
             "cty": "苏州",
         }
-        response = self._get_with_retry(search_url, params=params)
-        data = response.json()
+        data = self._get_with_retry(
+            search_url, params=params, parse=self._parse_search_response
+        )
 
         items = data.get("data", {}).get("list", [])
         if not items:
@@ -81,17 +90,47 @@ class HttpDamaiChecker:
             checked_at=datetime.now(TZ).isoformat(),
         )
 
-    def _get_with_retry(self, url: str, **kwargs) -> requests.Response:
+    def _parse_search_response(self, response: requests.Response) -> dict:
+        """Parse the searchajax JSON response, with clear diagnostics on failure.
+
+        Damai frequently returns an anti-bot/CAPTTCHA HTML page (HTTP 200) from
+        cloud/datacenter IPs. We need to distinguish that from a transient JSON
+        parse error so the caller can decide whether to fall back to a browser.
+        """
+        content_type = response.headers.get("Content-Type", "")
+        text = response.text
+        try:
+            return response.json()
+        except requests.exceptions.JSONDecodeError as e:
+            snippet = text[:500].replace("\n", " ")
+            logger.error(
+                "Failed to parse search response as JSON: status=%s content-type=%r snippet=%r",
+                response.status_code,
+                content_type,
+                snippet,
+            )
+            lower = text.lower()
+            if any(marker in lower for marker in BLOCKED_MARKERS):
+                raise DamaiBlockedError(
+                    "Damai returned an anti-bot/CAPTTCHA page instead of search JSON"
+                ) from e
+            raise
+
+    def _get_with_retry(
+        self, url: str, parse: Callable[[requests.Response], T] | None = None, **kwargs
+    ) -> T | requests.Response:
         """GET ``url`` with 3 retries and exponential backoff.
 
         ``raise_for_status`` runs inside the retry so transient 5xx responses
-        are retried rather than failing the check immediately.
+        are retried rather than failing the check immediately. When ``parse`` is
+        provided, the parsed result is returned; otherwise the raw response is
+        returned.
         """
 
-        def do() -> requests.Response:
+        def do() -> T | requests.Response:
             resp = self.session.get(url, timeout=10, **kwargs)
             resp.raise_for_status()
-            return resp
+            return parse(resp) if parse else resp
 
         return with_retry(
             do,

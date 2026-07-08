@@ -1,0 +1,183 @@
+import json
+import logging
+from datetime import datetime
+from urllib.parse import urljoin
+
+import pytz
+
+from checkers.base import ConcertResult, DamaiBlockedError
+from config import Config
+
+logger = logging.getLogger(__name__)
+
+TZ = pytz.timezone("Asia/Shanghai")
+
+# Markers in a response body that indicate Damai's anti-bot/CAPTCHA challenge.
+BLOCKED_MARKERS = ("_____tmd_____", "bxpunish", "captcha", "x5secdata")
+
+
+class PlaywrightDamaiChecker:
+    """Browser-based Damai checker used as a fallback when HTTP requests are blocked.
+
+    Damai's searchajax endpoint returns an anti-bot/CAPTCHA page from many
+    cloud/datacenter IPs. A real browser context can sometimes bypass the
+    challenge and either expose the JSON response or render the search results
+    into the DOM.
+    """
+
+    def __init__(self, config: Config):
+        self.config = config
+
+    def check(self) -> ConcertResult:
+        # Defer the import so the rest of the application can run (and tests can
+        # execute) even when Playwright is not installed.
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as e:
+            raise RuntimeError(
+                "Playwright is not installed; install it with 'pip install playwright'"
+            ) from e
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                viewport={"width": 1280, "height": 800},
+                locale="zh-CN",
+                timezone_id="Asia/Shanghai",
+            )
+            page = context.new_page()
+
+            captured: dict = {}
+
+            def handle_response(response) -> None:
+                if "searchajax.html" not in response.url:
+                    return
+                if response.request.method != "GET":
+                    return
+                try:
+                    captured["data"] = response.json()
+                    logger.info("Captured searchajax JSON via Playwright")
+                except Exception:  # noqa: BLE001 - JSON may be absent
+                    body = response.text()[:200]
+                    logger.warning(
+                        "searchajax response via Playwright was not JSON: %r", body
+                    )
+
+            page.on("response", handle_response)
+
+            search_page_url = (
+                f"https://search.damai.cn/search.htm?"
+                f"keyword={self.config.concert_keyword}&cty=苏州"
+            )
+            logger.info("Navigating to Damai search page with Playwright: %s", search_page_url)
+            page.goto(search_page_url, wait_until="networkidle", timeout=30000)
+            # Allow late responses to fire after networkidle.
+            page.wait_for_timeout(2000)
+
+            data = captured.get("data")
+            if not data:
+                data = self._extract_from_dom(page)
+
+            html = page.content().lower()
+            if not data and any(marker in html for marker in BLOCKED_MARKERS):
+                raise DamaiBlockedError(
+                    "Damai blocked Playwright with an anti-bot/CAPTCHA page"
+                )
+
+            browser.close()
+
+        if not data:
+            logger.warning("Playwright found no search results; reporting not_on_sale")
+            return ConcertResult(
+                title="",
+                url="",
+                status="not_on_sale",
+                on_sale=False,
+                checked_at=self._now_iso(),
+            )
+
+        items = data.get("data", {}).get("list", [])
+        if not items:
+            logger.warning(
+                "Playwright search returned empty list for keyword=%r; reporting not_on_sale",
+                self.config.concert_keyword,
+            )
+            return ConcertResult(
+                title="",
+                url="",
+                status="not_on_sale",
+                on_sale=False,
+                checked_at=self._now_iso(),
+            )
+
+        item = self._pick_best_item(items)
+        detail_url = urljoin("https://detail.damai.cn/", item.get("url", ""))
+        title = item.get("name", "")
+
+        logger.info("Navigating to detail page with Playwright: %s", detail_url)
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                viewport={"width": 1280, "height": 800},
+                locale="zh-CN",
+                timezone_id="Asia/Shanghai",
+            )
+            page = context.new_page()
+            page.goto(detail_url, wait_until="networkidle", timeout=30000)
+            detail_html = page.content()
+            browser.close()
+
+        on_sale = self._parse_sale_status(detail_html)
+        return ConcertResult(
+            title=title,
+            url=detail_url,
+            status="on_sale" if on_sale else "not_on_sale",
+            on_sale=on_sale,
+            checked_at=self._now_iso(),
+        )
+
+    def _extract_from_dom(self, page) -> dict | None:
+        """Fallback extraction from rendered DOM when JSON interception misses."""
+        try:
+            items = page.evaluate(
+                """() => {
+                    const links = Array.from(
+                        document.querySelectorAll('a[href*="/item.htm?id="]')
+                    );
+                    return links.slice(0, 20).map(a => ({
+                        name: (a.innerText || a.textContent || '').trim(),
+                        url: a.getAttribute('href') || '',
+                        cityname: ''
+                    }));
+                }"""
+            )
+        except Exception as e:  # noqa: BLE001 - DOM extraction is best-effort
+            logger.warning("DOM extraction failed: %s", e)
+            return None
+
+        if items:
+            logger.info("Extracted %d result(s) from rendered DOM", len(items))
+            return {"data": {"list": items}}
+        return None
+
+    def _pick_best_item(self, items: list[dict]) -> dict:
+        keyword = self.config.concert_keyword.replace(" ", "")
+        best = items[0]
+        best_score = 0
+        for item in items:
+            name = item.get("name", "")
+            city = item.get("cityname", "")
+            score = sum(1 for term in keyword if term in name)
+            if "苏州" in city:
+                score += 10
+            if score > best_score:
+                best_score = score
+                best = item
+        return best
+
+    def _parse_sale_status(self, html: str) -> bool:
+        sale_phrases = ["立即购买", "购票", "选座购买", "马上预订"]
+        return any(phrase in html for phrase in sale_phrases)
+
+    def _now_iso(self) -> str:
+        return datetime.now(TZ).isoformat()

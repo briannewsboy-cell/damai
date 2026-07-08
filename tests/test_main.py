@@ -51,6 +51,7 @@ def test_run_once_sends_notification_on_sale(config):
     with patch("main.load_state", return_value=old_state), \
          patch("main.save_state") as mock_save, \
          patch("main.HttpDamaiChecker") as mock_checker_cls, \
+         patch("main.PlaywrightDamaiChecker") as mock_pw_checker_cls, \
          patch("main.EmailNotifier") as mock_email_cls, \
          patch("main.WeChatNotifier") as mock_wechat_cls:
 
@@ -64,6 +65,8 @@ def test_run_once_sends_notification_on_sale(config):
 
         mock_email.send.assert_called_once()
         mock_wechat.send.assert_called_once()
+        # HTTP checker succeeded, fallback should not be instantiated.
+        mock_pw_checker_cls.assert_not_called()
         mock_save.assert_called_once()
         saved_state = mock_save.call_args[0][1]
         assert saved_state.last_status == "on_sale"
@@ -289,12 +292,14 @@ def test_run_polling_continues_after_exception(config):
     with patch("main.load_state", return_value=State()), \
          patch("main.save_state"), \
          patch("main.HttpDamaiChecker") as mock_checker_cls, \
+         patch("main.PlaywrightDamaiChecker") as mock_pw_checker_cls, \
          patch("main.EmailNotifier"), \
          patch("main.WeChatNotifier"), \
          patch("main.time.sleep"), \
          patch("main.time.time", side_effect=time_values):
 
         mock_checker_cls.return_value.check.side_effect = RuntimeError("boom")
+        mock_pw_checker_cls.return_value.check.side_effect = RuntimeError("pw blocked")
 
         # Should not raise even though run_once raises internally
         run_polling(config, duration_seconds=10, interval_seconds=5)
@@ -420,10 +425,12 @@ def test_run_once_checker_failure_sends_one_time_alert(config):
     with patch("main.load_state", return_value=old_state), \
          patch("main.save_state") as mock_save, \
          patch("main.HttpDamaiChecker") as mock_checker_cls, \
+         patch("main.PlaywrightDamaiChecker") as mock_pw_checker_cls, \
          patch("main.EmailNotifier") as mock_email_cls, \
          patch("main.WeChatNotifier") as mock_wechat_cls:
 
         mock_checker_cls.return_value.check.side_effect = RuntimeError("damai 500")
+        mock_pw_checker_cls.return_value.check.side_effect = RuntimeError("playwright blocked")
         mock_email = Mock()
         mock_wechat = Mock()
         mock_email_cls.return_value = mock_email
@@ -451,10 +458,12 @@ def test_run_once_checker_failure_does_not_renotify(config):
     with patch("main.load_state", return_value=old_state), \
          patch("main.save_state") as mock_save, \
          patch("main.HttpDamaiChecker") as mock_checker_cls, \
+         patch("main.PlaywrightDamaiChecker") as mock_pw_checker_cls, \
          patch("main.EmailNotifier") as mock_email_cls, \
          patch("main.WeChatNotifier") as mock_wechat_cls:
 
         mock_checker_cls.return_value.check.side_effect = RuntimeError("damai 500")
+        mock_pw_checker_cls.return_value.check.side_effect = RuntimeError("playwright blocked")
 
         run_once(config)
 
@@ -485,6 +494,66 @@ def test_run_once_resets_checker_failed_flag_on_success(config):
         mock_save.assert_called_once()
         saved_state = mock_save.call_args[0][1]
         assert saved_state.checker_failed_notified is False
+
+
+def test_run_once_falls_back_to_playwright_when_http_fails(config):
+    """If the HTTP checker is blocked, Playwright checker is tried next."""
+    old_state = State(last_status="not_on_sale", notified=False)
+    result = _make_result("on_sale")
+
+    with patch("main.load_state", return_value=old_state), \
+         patch("main.save_state") as mock_save, \
+         patch("main.HttpDamaiChecker") as mock_checker_cls, \
+         patch("main.PlaywrightDamaiChecker") as mock_pw_checker_cls, \
+         patch("main.EmailNotifier") as mock_email_cls, \
+         patch("main.WeChatNotifier") as mock_wechat_cls:
+
+        mock_checker_cls.return_value.check.side_effect = RuntimeError("damai blocked")
+        mock_pw_checker_cls.return_value.check.return_value = result
+        mock_email = Mock()
+        mock_wechat = Mock()
+        mock_email_cls.return_value = mock_email
+        mock_wechat_cls.return_value = mock_wechat
+
+        run_once(config)
+
+        # Fallback succeeded, notifications sent normally.
+        mock_checker_cls.return_value.check.assert_called_once()
+        mock_pw_checker_cls.return_value.check.assert_called_once()
+        mock_email.send.assert_called_once()
+        mock_wechat.send.assert_called_once()
+        saved_state = mock_save.call_args[0][1]
+        assert saved_state.last_status == "on_sale"
+        assert saved_state.notified is True
+        assert saved_state.checker_failed_notified is False
+
+
+def test_run_once_sends_checker_failed_when_both_checkers_fail(config):
+    """When HTTP and Playwright both fail, the one-time checker alert fires."""
+    old_state = State(last_status="not_on_sale", notified=False)
+
+    with patch("main.load_state", return_value=old_state), \
+         patch("main.save_state") as mock_save, \
+         patch("main.HttpDamaiChecker") as mock_checker_cls, \
+         patch("main.PlaywrightDamaiChecker") as mock_pw_checker_cls, \
+         patch("main.EmailNotifier") as mock_email_cls, \
+         patch("main.WeChatNotifier") as mock_wechat_cls:
+
+        mock_checker_cls.return_value.check.side_effect = RuntimeError("damai blocked")
+        mock_pw_checker_cls.return_value.check.side_effect = RuntimeError("playwright blocked")
+        mock_email = Mock()
+        mock_wechat = Mock()
+        mock_email_cls.return_value = mock_email
+        mock_wechat_cls.return_value = mock_wechat
+
+        run_once(config)
+
+        mock_checker_cls.return_value.check.assert_called_once()
+        mock_pw_checker_cls.return_value.check.assert_called_once()
+        mock_email.send.assert_called_once()
+        mock_wechat.send.assert_called_once()
+        saved_state = mock_save.call_args[0][1]
+        assert saved_state.checker_failed_notified is True
 
 
 # --- Polling window cap (Important fix #2) -------------------------------
