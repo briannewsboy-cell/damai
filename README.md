@@ -43,7 +43,7 @@ HTTP checker 优先；当大麦返回反爬/CAPTCHA 页面时，自动回退到 
 | SMTP_PORT | SMTP 端口 |
 | SMTP_USER | 发件邮箱 |
 | SMTP_PASSWORD | 邮箱授权码 |
-| EMAIL_TO | 收件邮箱 |
+| EMAIL_TO | 收件邮箱，多个用英文逗号分隔，如 `a@qq.com,b@qq.com` |
 | WECHAT_TOKEN | Server 酱 SCKEY 或 PushPlus token |
 | WECHAT_PROVIDER | serverchan 或 pushplus |
 

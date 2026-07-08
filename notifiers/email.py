@@ -31,13 +31,18 @@ class EmailNotifier:
             f"链接：{url}\n"
         )
 
+        # EMAIL_TO may contain a comma-separated list of recipients.
+        recipients = [addr.strip() for addr in self.config.email_to.split(",") if addr.strip()]
+        if not recipients:
+            raise ValueError("EMAIL_TO is empty")
+
         msg = MIMEMultipart()
         msg["From"] = self.config.smtp_user
-        msg["To"] = self.config.email_to
+        msg["To"] = ", ".join(recipients)
         msg["Subject"] = subject
         msg.attach(MIMEText(body, "plain", "utf-8"))
 
         with smtplib.SMTP(self.config.smtp_host, self.config.smtp_port) as server:
             server.starttls()
             server.login(self.config.smtp_user, self.config.smtp_password)
-            server.send_message(msg)
+            server.send_message(msg, to_addrs=recipients)

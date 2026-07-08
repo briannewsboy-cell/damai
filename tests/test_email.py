@@ -34,10 +34,12 @@ def test_send_email(config):
 
         instance.starttls.assert_called_once()
         instance.login.assert_called_once_with("sender@example.com", "secret")
-        call_args = instance.send_message.call_args[0][0]
-        assert call_args["To"] == "receiver@example.com"
-        assert call_args["From"] == "sender@example.com"
-        assert "刘宪华演唱会-苏州站" in call_args.get_payload()[0].get_payload(decode=True).decode()
+        call_args = instance.send_message.call_args
+        msg = call_args[0][0]
+        assert msg["To"] == "receiver@example.com"
+        assert msg["From"] == "sender@example.com"
+        assert call_args.kwargs.get("to_addrs") == ["receiver@example.com"]
+        assert "刘宪华演唱会-苏州站" in msg.get_payload()[0].get_payload(decode=True).decode()
 
 
 def test_send_email_subject_for_on_sale(config):
@@ -104,3 +106,34 @@ def test_send_email_subject_for_unknown_status(config):
         msg = instance.send_message.call_args[0][0]
         assert "something_unexpected" not in msg["Subject"]
         assert "未知状态" in msg["Subject"]
+
+
+def test_send_email_to_multiple_recipients():
+    """EMAIL_TO with comma-separated addresses sends to each recipient."""
+    config = Config(
+        concert_keyword="刘宪华 苏州 演唱会",
+        concert_detail_url=None,
+        smtp_host="smtp.example.com",
+        smtp_port=587,
+        smtp_user="sender@example.com",
+        smtp_password="secret",
+        email_to="receiver1@example.com, receiver2@example.com",
+        wechat_token="wx_token",
+        wechat_provider="serverchan",
+    )
+    notifier = EmailNotifier(config)
+    with patch("notifiers.email.smtplib.SMTP") as mock_smtp:
+        instance = Mock()
+        mock_smtp.return_value.__enter__ = Mock(return_value=instance)
+        mock_smtp.return_value.__exit__ = Mock(return_value=False)
+
+        notifier.send(
+            title="刘宪华演唱会-苏州站",
+            url="https://detail.damai.cn/item.htm?id=123",
+            status="on_sale",
+        )
+
+        msg = instance.send_message.call_args[0][0]
+        to_addrs = instance.send_message.call_args.kwargs.get("to_addrs")
+        assert msg["To"] == "receiver1@example.com, receiver2@example.com"
+        assert to_addrs == ["receiver1@example.com", "receiver2@example.com"]
